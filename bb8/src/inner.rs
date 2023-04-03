@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::fmt;
 use std::future::Future;
+use std::ops::Deref;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,13 @@ where
     }
 
     pub(crate) async fn start_connections(&self) -> Result<(), M::Error> {
-        let wanted = self.inner.internals.lock().wanted(&self.inner.statics);
+        let wanted = self
+            .inner
+            .internals
+            .lock()
+            .deref()
+            .borrow_mut()
+            .wanted(&self.inner.statics);
         let mut stream = self.replenish_idle_connections(wanted);
         while let Some(result) = stream.next().await {
             result?
@@ -49,8 +56,8 @@ where
     }
 
     pub(crate) fn spawn_start_connections(&self) {
-        let mut locked = self.inner.internals.lock();
-        self.spawn_replenishing_approvals(locked.wanted(&self.inner.statics));
+        let locked = self.inner.internals.lock();
+        self.spawn_replenishing_approvals(locked.deref().borrow_mut().wanted(&self.inner.statics));
     }
 
     fn spawn_replenishing_approvals(&self, approvals: ApprovalIter) {
@@ -108,8 +115,9 @@ where
     {
         loop {
             let mut conn = {
-                let mut locked = self.inner.internals.lock();
-                match locked.pop(&self.inner.statics) {
+                let locked = self.inner.internals.lock();
+                let mut pool = locked.deref().borrow_mut();
+                match pool.pop(&self.inner.statics) {
                     Some((conn, approvals)) => {
                         self.spawn_replenishing_approvals(approvals);
                         make_pooled_conn(self, conn)
@@ -134,8 +142,11 @@ where
 
         let (tx, rx) = oneshot::channel();
         {
-            let mut locked = self.inner.internals.lock();
-            let approvals = locked.push_waiter(tx, &self.inner.statics);
+            let locked = self.inner.internals.lock();
+            let approvals = locked
+                .deref()
+                .borrow_mut()
+                .push_waiter(tx, &self.inner.statics);
             self.spawn_replenishing_approvals(approvals);
         };
 
@@ -161,11 +172,14 @@ where
             }
         });
 
-        let mut locked = self.inner.internals.lock();
+        let locked = self.inner.internals.lock();
         match conn {
-            Some(conn) => locked.put(conn, None, self.inner.clone()),
+            Some(conn) => locked
+                .deref()
+                .borrow_mut()
+                .put(conn, None, self.inner.clone()),
             None => {
-                let approvals = locked.dropped(1, &self.inner.statics);
+                let approvals = locked.deref().borrow_mut().dropped(1, &self.inner.statics);
                 self.spawn_replenishing_approvals(approvals);
             }
         }
@@ -173,12 +187,12 @@ where
 
     /// Returns information about the current state of the pool.
     pub(crate) fn state(&self) -> State {
-        self.inner.internals.lock().state()
+        self.inner.internals.lock().deref().borrow().state()
     }
 
     fn reap(&self) {
-        let mut internals = self.inner.internals.lock();
-        let approvals = internals.reap(&self.inner.statics);
+        let internals = self.inner.internals.lock();
+        let approvals = internals.deref().borrow_mut().reap(&self.inner.statics);
         self.spawn_replenishing_approvals(approvals);
     }
 
@@ -205,16 +219,17 @@ where
             match conn {
                 Ok(conn) => {
                     let conn = Conn::new(conn);
-                    shared
-                        .internals
-                        .lock()
-                        .put(conn, Some(approval), self.inner.clone());
+                    shared.internals.lock().deref().borrow_mut().put(
+                        conn,
+                        Some(approval),
+                        self.inner.clone(),
+                    );
                     return Ok(());
                 }
                 Err(e) => {
                     if Instant::now() - start > self.inner.statics.connection_timeout {
-                        let mut locked = shared.internals.lock();
-                        locked.connect_failed(approval);
+                        let locked = shared.internals.lock();
+                        locked.deref().borrow_mut().connect_failed(approval);
                         return Err(e);
                     } else {
                         delay = max(Duration::from_millis(200), delay);

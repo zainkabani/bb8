@@ -1,12 +1,14 @@
+use std::cell::RefCell;
 use std::cmp::min;
 use std::sync::Arc;
 use std::time::Instant;
 
 use futures_channel::oneshot;
-use parking_lot::Mutex;
+use parking_lot::ReentrantMutex;
 
 use crate::api::{Builder, ManageConnection};
 use std::collections::VecDeque;
+use std::ops::Deref;
 
 /// The guts of a `Pool`.
 #[allow(missing_debug_implementations)]
@@ -16,7 +18,7 @@ where
 {
     pub(crate) statics: Builder<M>,
     pub(crate) manager: M,
-    pub(crate) internals: Mutex<PoolInternals<M>>,
+    pub(crate) internals: ReentrantMutex<RefCell<PoolInternals<M>>>,
 }
 
 impl<M> SharedPool<M>
@@ -27,7 +29,7 @@ where
         Self {
             statics,
             manager,
-            internals: Mutex::new(PoolInternals::default()),
+            internals: ReentrantMutex::new(RefCell::new(PoolInternals::default())),
         }
     }
 }
@@ -188,8 +190,11 @@ impl<M: ManageConnection> InternalsGuard<M> {
 impl<M: ManageConnection> Drop for InternalsGuard<M> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            let mut locked = self.pool.internals.lock();
-            locked.put(conn, None, self.pool.clone());
+            let locked = self.pool.internals.lock();
+            locked
+                .deref()
+                .borrow_mut()
+                .put(conn, None, self.pool.clone());
         }
     }
 }
