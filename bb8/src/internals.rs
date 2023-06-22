@@ -76,8 +76,8 @@ where
 
         // Queue it in the idle queue
         match queue_strategy {
-            QueueStrategy::Fifo => self.conns.push_back(IdleConn::from(guard.conn.take().unwrap())),
-            QueueStrategy::Lifo => self.conns.push_front(IdleConn::from(guard.conn.take().unwrap())),
+            QueueStrategy::Fifo => self.conns.push_back(IdleConn::from(conn)),
+            QueueStrategy::Lifo => self.conns.push_front(IdleConn::from(conn)),
         };
 
         self.notify.notify_one()
