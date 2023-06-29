@@ -64,9 +64,16 @@ where
         &mut self,
         config: &Builder<M>,
     ) -> Option<(Conn<M::Connection>, ApprovalIter)> {
-        self.conns
-            .pop_front()
-            .map(|idle| (idle.conn, self.wanted(config)))
+        match config.queue_strategy {
+            QueueStrategy::Fifo => self
+                .conns
+                .pop_front()
+                .map(|idle| (idle.conn, self.wanted(config))),
+            QueueStrategy::Lifo => self
+                .conns
+                .pop_back()
+                .map(|idle| (idle.conn, self.wanted(config))),
+        }
     }
 
     pub(crate) fn put(
@@ -80,8 +87,6 @@ where
             self.num_conns += 1;
         }
 
-        let queue_strategy = pool.statics.queue_strategy;
-
         let mut guard = InternalsGuard::new(conn, pool);
         while let Some(waiter) = self.waiters.pop_front() {
             // This connection is no longer idle, send it back out
@@ -94,12 +99,8 @@ where
             }
         }
 
-        // Queue it in the idle queue
-        let conn = IdleConn::from(guard.conn.take().unwrap());
-        match queue_strategy {
-            QueueStrategy::Fifo => self.conns.push_back(conn),
-            QueueStrategy::Lifo => self.conns.push_front(conn),
-        }
+        self.conns
+            .push_back(IdleConn::from(guard.conn.take().unwrap()));
     }
 
     pub(crate) fn connect_failed(&mut self, _: Approval) {
